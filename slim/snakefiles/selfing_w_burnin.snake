@@ -1,0 +1,299 @@
+import numpy as np
+import pandas as pd
+from itertools import product
+from datetime import datetime
+import os
+import subprocess
+
+
+def expand_grid(data_dict):
+    rows = product(*data_dict.values())
+    return pd.DataFrame.from_records(rows, columns=data_dict.keys())
+
+# workdir
+workdir: config['workpath']
+
+# set up replicates, sims and burnin
+reps = 20
+breps = 20
+
+# set up parameters
+allparams = {
+    "hdel": [0,.5],             # control h for del and ben here,
+    "hben": [.3],               # *hben* has no effect at the moment
+    "hlethal": [.02],
+    "mdel": [-0.001],
+    "mben": [0.01,0],
+    "mlethal": [-1],
+    "nneutral": [0.25],
+    "ndel": [0.649],
+    "nben": [0.001],
+    "nlethal": [.1],
+    "Na": [5000],
+    "Ns": [200],
+    "subpops": [50],
+    "subpopsA": [25],
+    "selfRate": [0,.5,0.95,1],
+    "sh": [0],
+    "mig": [0.05],
+    "maxAge": [1],
+    "rCoeff": [1.2],
+}
+
+nreps = np.arange(reps)
+dparams = expand_grid(allparams)
+dparams.index = range(1000,len(dparams) + 1000)
+
+# relevant parameters for burnin
+dparamsB = dparams[["hdel","hben","hlethal","mdel","mben","mlethal","nneutral","ndel","nben","nlethal","Na","rCoeff","maxAge"]]
+bpar = dparamsB.drop_duplicates().reset_index(drop=True)
+
+wdir = ""
+
+# write parameter space table
+if not os.path.isfile("parcomb.csv"):
+    pd.DataFrame.to_csv(dparams,wdir + "parcomb.csv",index=True)
+
+burnvcf = []
+for r in dparamsB.index:
+    for n in range(breps):
+        s = ""
+        for c in bpar.columns:
+            s += "_" + str(c) + str(dparamsB.loc[r,c])
+        burnvcf.append(str(n) + s + ".slimout")
+
+burnfind = pd.DataFrame({'vcfname':burnvcf,"parcomb":np.repeat(dparamsB.index,breps)})
+burnvcf = pd.unique(burnvcf)
+
+# output = '36_hdel0.3_hben0.3_mdel-0.0001_mben0.0_nneutral0.499_ndel0.5_nben0.01_Na5000_rCoeff1.2.slimout'
+
+stages = ["t1_A","t1_B","t3_A","t3_B","t3_C","t3_Z"]
+
+###################
+# snakemake rules #
+###################
+
+wildcard_constraints:
+    burnin = '|'.join([re.escape(x) for x in burnvcf])
+
+rule all:
+    input:
+        wdir + "simplots/report_plots.pdf"
+
+rule burnin:
+    output:
+        "{burnin}"
+    params:
+        slim = config["slimpath"],
+        slimscript = "~/pro/selfing-sims/slim/test_selfing_fecundity_only_burnin_lethal.slim"
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 4096,
+        time = lambda wildcards, attempt: attempt * 60 * 120
+    run:
+        # find relevant parameters for given file name
+        pc = burnfind.loc[burnfind.vcfname == wildcards.burnin,"parcomb"].reset_index(drop=True)
+        d = dparamsB.loc[dparamsB.index == pc[0]]
+
+        # start slim script
+        vals = [d.iloc[0,i] for i in range(d.shape[1])]
+        rowl = dparamsB.columns.tolist()
+        pars = [str(i) + "=" + str(j) for i,j in zip(rowl, vals)]
+        pars = " -d ".join(pars)
+        pars = "-d " + pars + " -d bfile=\\\"" + wildcards.burnin + "\\\""
+
+        subprocess.Popen(params.slim + " " + pars + " " + params.slimscript, shell=True).wait()
+
+
+rule sim:
+    input:
+        parameters = wdir + "parcomb.csv",
+        f = expand("{burnin}", burnin=burnvcf),
+    output:
+        wdir + "t1_A_rep{nrep}_par{dparam}.vcf",
+        wdir + "t1_B_rep{nrep}_par{dparam}.vcf",
+        wdir + "t3_A_rep{nrep}_par{dparam}.vcf",
+        wdir + "t3_B_rep{nrep}_par{dparam}.vcf",
+        wdir + "t3_C_rep{nrep}_par{dparam}.vcf",
+        wdir + "t3_Z_rep{nrep}_par{dparam}.vcf",
+        wdir + "sizes-subpops_rep{nrep}_par{dparam}.txt",
+        wdir + "fitness-stats_rep{nrep}_par{dparam}.txt",
+        wdir + "pi-edge_rep{nrep}_par{dparam}.txt",
+        wdir + "pi-core_rep{nrep}_par{dparam}.txt",
+    params:
+        slim = config["slimpath"],
+        slimscript = "~/pro/selfing-sims/slim/test_selfing_fecundity_w_burnin_lethal.slim"
+    threads:
+        1
+    log:
+        "logs/snake/sim_rep{nrep}_par{dparam}.log"
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 16384,
+        time = lambda wildcards, attempt: attempt * 60 * 96
+    run:
+        # determine burn in file, random sample from correct par comb
+        bfile = "\\\"" + burnfind[burnfind.parcomb == int(wildcards.dparam)].sample(1).vcfname.values[0] + "\\\""
+
+        # construct submit string
+        d = dparams[dparams.index == int(wildcards.dparam)]
+        vals = [d.iloc[0,i] for i in range(d.shape[1])]
+        rowl = dparams.columns.tolist()
+        pars = [str(i) + "=" + str(j) for i,j in zip(rowl, vals)]
+        pars = " -d ".join(pars)
+        pars = "-d " + pars + " -d parcomb=" + str(d.index[0]) + " -d bfile=" + bfile + " -d rep=" + str(wildcards.nrep)
+
+        subprocess.Popen(params.slim + " " + pars + " " + params.slimscript, shell=True).wait()
+
+
+rule loadcalc:
+    input:
+        wdir + "{stage}_rep{nrep}_par{dparam}.vcf",
+    output:
+        load =   wdir + "genload-{stage}_rep{nrep}_par{dparam}.txt",
+        loaddel= wdir + "loaddel-{stage}_rep{nrep}_par{dparam}.txt",
+        matrix = wdir + "gmatrix-{stage}_rep{nrep}_par{dparam}.txt",
+        scoeff = wdir + "s-coeff-{stage}_rep{nrep}_par{dparam}.txt",
+        freq =   wdir + "allfreq-{stage}_rep{nrep}_par{dparam}.txt",
+        dom =    wdir + "domcoef-{stage}_rep{nrep}_par{dparam}.txt",
+        loadnaive=wdir + "loadnaive-{stage}_rep{nrep}_par{dparam}.txt",
+    params:
+        config["gitdir"],
+        config["rcommand"]
+    threads:
+        1
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 2048,
+        time = lambda wildcards, attempt: attempt * 20
+    log:
+        "logs/snake/load_{stage}_rep{nrep}_par{dparam}.log"
+    shell:
+        """
+        set +euo pipefail
+        {params[1]}
+        {params[0]}/funs/gmatrix.sh {input} {output.scoeff} {output.matrix}.temp {output.dom} > {log} 2>&1
+        Rscript --vanilla {params[0]}/funs/gmatrix.R {output.dom} {output.matrix}.temp {output.matrix} >> {log} 2>&1
+        Rscript --vanilla {params[0]}/funs/freq.R {output.scoeff} {output.matrix}.temp {output.freq} >> {log} 2>&1
+        Rscript --vanilla {params[0]}/funs/load.R {output.scoeff} {output.matrix} {output.load} >> {log} 2>&1
+        Rscript --vanilla {params[0]}/funs/loaddel.R {output.scoeff} {output.matrix} {output.loaddel} >> {log} 2>&1
+        Rscript --vanilla {params[0]}/funs/loadnaive.R {output.scoeff} {output.matrix}.temp {output.loadnaive} >> {log} 2>&1
+        """
+
+rule roh:
+    input:
+        wdir + "{stage}_rep{nrep}_par{dparam}.vcf",
+    output:
+        wdir + "roh_{stage}_rep{nrep}_par{dparam}.txt",
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 2048,
+        time = lambda wildcards, attempt: attempt * 20
+    log:
+        "logs/snake/roh_{stage}_rep{nrep}_par{dparam}.log"
+    shell:
+        """
+        module load vital-it/7 UHTS/Analysis/samtools/1.10
+        bcftools roh -GInf -O r -o {output} -eGT,- {input} > {log}
+        """
+
+rule summarize_roh:
+    input:
+        expand(wdir + "roh_{stage}_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index, stage=stages)
+    output:
+        wdir + "roh_all_summary.txt"
+    log:
+        "logs/snake/summarize_roh.log"
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 2048,
+        time = lambda wildcards, attempt: attempt * 20
+    shell:
+        """
+        awk '/^[^#]/{{print $0"\t"FILENAME}}' roh*par*txt > {output} 2> {log}
+        """
+
+rule summarize:
+    input:
+        load =   expand(wdir + "genload-{stage}_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index, stage=stages),
+        loaddel =expand(wdir + "loaddel-{stage}_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index, stage=stages),
+        scoeff = expand(wdir + "s-coeff-{stage}_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index, stage=stages),
+        freq =   expand(wdir + "allfreq-{stage}_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index, stage=stages),
+        loadnaive =   expand(wdir + "loadnaive-{stage}_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index, stage=stages),
+    output:
+        load =   wdir + "load_{stage}_summary.txt",    # includes all nonzero sel coeffs
+        loaddel =wdir + "loaddel_{stage}_summary.txt",  # includes all negative sel coeffs
+        scoeff = wdir + "s-coeffs_{stage}_summary.txt",
+        freq =   wdir + "freq_{stage}_summary.txt",
+        loadnaive =   wdir + "loadnaive_{stage}_summary.txt",
+    threads:
+        1
+    log:
+        "logs/snake/summarize_{stage}_all.log"
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 2048,
+        time = lambda wildcards, attempt: attempt * 20
+    shell:
+        """
+        awk '{{print $0"\t"FILENAME}}' genload*{wildcards.stage}*par* > {output.load} 2> {log}
+        awk '{{print $0"\t"FILENAME}}' loaddel*{wildcards.stage}*par* > {output.loaddel} 2>> {log}
+        awk '{{print $0"\t"FILENAME}}' s-coeff*{wildcards.stage}*par* > {output.scoeff} 2>> {log}
+        awk '{{print $0"\t"FILENAME}}' allfreq*{wildcards.stage}*par* > {output.freq} 2>> {log}
+        awk '{{print $0"\t"FILENAME}}' loadnaive*{wildcards.stage}*par* > {output.loadnaive} 2>> {log}
+        """
+
+rule summarize_special:
+    input:
+        pi =     expand(wdir + "pi-edge_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index),
+        sizes =  expand(wdir + "sizes-subpops_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index),
+        load =   expand(wdir + "fitness-stats_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index),
+        picore = expand(wdir + "pi-core_rep{nrep}_par{dparam}.txt", nrep=nreps, dparam=dparams.index),
+    output:
+        pi = wdir + "pi-edge_summary.txt",
+        sizes = wdir + "sizes-subpops_summary.txt",
+        load =  wdir + "fitness-stats_summary.txt",
+        picore = wdir + "pi-core_summary.txt"
+    params:
+        files_pi = lambda wildcards, input: " ".join(input.pi),
+        files_sizes = lambda wildcards, input: " ".join(input.sizes),
+        files_load = lambda wildcards, input: " ".join(input.load),
+        files_picore = lambda wildcards, input: " ".join(input.picore),
+    threads:
+        1
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 2048,
+        time = lambda wildcards, attempt: attempt * 20
+    log:
+        "logs/snake/summarize_special_all.log"
+    shell:
+        """
+        awk '{{print $0"\t"FILENAME}}' {params.files_sizes} > {output.sizes} 2> {log}
+        awk '{{print $0"\t"FILENAME}}' {params.files_load} > {output.load} 2> {log}
+        awk '{{print $0"\t"FILENAME}}' {params.files_pi} > {output.pi} 2> {log}
+        awk '{{print $0"\t"FILENAME}}' {params.files_picore} > {output.picore} 2> {log}
+        """
+
+rule plotting:
+    input:
+        sizes = wdir + "sizes-subpops_summary.txt",
+        load =   expand(wdir + "load_{stage}_summary.txt", stage=stages),
+        loaddel =expand(wdir + "loaddel_{stage}_summary.txt", stage=stages),
+        scoeff = expand(wdir + "s-coeffs_{stage}_summary.txt", stage=stages),
+        freq =   expand(wdir + "freq_{stage}_summary.txt", stage=stages),
+        loadnaiv=expand(wdir + "loadnaive_{stage}_summary.txt", stage=stages),
+        roh =    wdir + "roh_all_summary.txt"
+    output:
+        wdir + "simplots/report_plots.pdf"
+    params:
+        config["gitdir"],
+        config["rcommand"],
+        wdir,
+        config['workpath']
+    threads:
+        1
+    resources:
+        mem_mb = 131072,
+        time = 120
+    log:
+        "logs/snake/plotting.log"
+    shell:
+        """
+        {params[1]}
+        Rscript --vanilla {params[0]}/stats/selfingplots.R {params[3]} > {log} 2>&1
+        convert `find {params[2]}simplots/ -name "*.png" -printf "%T@ %Tc %p \n"  | sort -n | awk '{{print $NF}}'` {output} >> {log} 2>&1
+        """

@@ -1,0 +1,469 @@
+initialize() {
+	
+	initializeSLiMModelType("nonWF");
+	
+	initializeSLiMOptions(preventIncidentalSelfing=T);
+	
+	if (exists("slimgui")) {
+		
+		setwd("~/temp");
+		defineConstant("hdel",0.3);      // dom coeff
+		defineConstant("hben",0.3);
+		defineConstant("hlethal",0.02);
+		defineConstant("mdel",-0.001);   // mean sel coeff
+		defineConstant("mben",0.001);
+		defineConstant("mlethal",-1);    // -1 for lethal alleles, 0 makes them neutral
+		defineConstant("nneutral",0.25); // relative ratios of mutations
+		defineConstant("ndel",0.649);
+		defineConstant("nben",0.001);
+		defineConstant("nlethal",0.1);
+		defineConstant("Na",5000);
+		defineConstant("Ns",20);
+		defineConstant("subpops",100);		// total populations
+		defineConstant("subpopsA",5);     // number of demes before switch mating type
+		defineConstant("selfRate",1);     // selfing rate after subpopsA, 1 means strictly selfing, 0.5 means 50 % are outcrossing
+		defineConstant("sh",0); 				// if shell output wanted (1=T, 0=F)
+		defineConstant("rep",9999);      // replicate index, 9999 for testing
+		defineConstant("parcomb",9999);   // parameter combination index (9999 for testing)
+		defineConstant("mig",0.05);       // migration rate
+		defineConstant("maxAge",10);      // maximum age in generations for reproduction
+		defineConstant("rCoeff",1.5);  // R coeff for BevHolt model
+		//		defineConstant("stack","f");   // stack policy; s, f or l 
+		defineConstant("bfile","0_hdel0.3_hben0.3_hlethal0.02_mdel-0.001_mben0.01_mlethal-1_nneutral0.25_ndel0.649_nben0.001_nlethal0.1_Na5000_rCoeff1.2_maxAge1.slimout"); // filename for output burn in
+	
+	} else {
+		
+		// createDirectory(paste0(getSeed()+"_"+parcomb));
+		// setwd(paste0(getSeed()+"_"+parcomb));
+		// defineConstant("sh",0);
+		getSeed();
+	
+	}
+	
+	
+	defineConstant("gsize",1e7);
+	defineConstant("rec",1e-8);
+	defineConstant("mCoeff", Ns / (rCoeff - 1));
+	defineConstant("mCoeffC", Na / (rCoeff - 1));
+	defineConstant("size_tm10",0);
+	defineConstant("numPops_tm10",0);
+	defineConstant("t_const",0);
+	defineConstant("subpopsT",subpops); // because you can't redefine CL parameters in slim
+	defineConstant("globalFitnessScaler", 100000); // to make soft selection and fecundity selection
+	defineGlobal("samplingK", 5); // sampling frequency for summary stat output	
+	defineConstant("selCoefBreaksDel",c(-1,-1e-2,-1e-3,-1e-4,-1e-99));
+	defineConstant("selCoefBreaksBen",c(1e-99,1e-3,1e-2,1e-1,1));
+	
+	
+	initializeMutationRate(7e-8);
+	initializeMutationType("m1", 0.5, "f", 0.0);         // neutral
+	initializeMutationType("m2", hdel, "e", mdel);	    // deleterious: dom coeff, dist, mean
+	initializeMutationType("m3", hdel, "e", mben);       // beneficial: dom coeff same as del, dist, mean
+	initializeMutationType("m4", hlethal, "f", mlethal);      // lethal
+	
+	m1.convertToSubstitution = T;
+	m1.mutationStackGroup = -1;
+	m1.mutationStackPolicy = "f";
+	m2.convertToSubstitution = F;
+	m2.mutationStackGroup = -1;
+	m2.mutationStackPolicy = "f";
+	m3.convertToSubstitution = F;
+	m3.mutationStackGroup = -1;
+	m3.mutationStackPolicy = "f";
+	m4.convertToSubstitution = F;
+	m4.mutationStackGroup = -1;
+	m4.mutationStackPolicy = "f";
+	
+	
+	initializeGenomicElementType("g1", c(m1, m2, m3, m4), c(nneutral,ndel,nben,nlethal));
+	initializeGenomicElement(g1, 0, gsize-1);
+	initializeRecombinationRate(rec);
+}
+
+
+function (numeric)calcPi(* counts, i chrom, i sites) {
+	n = chrom;
+	ct = sort(unique(counts));
+	sfs = c();
+	for (i in ct) {sfs=c(sfs,length(counts[counts==i]));}
+	p = ct/n;
+	q = 1-p;
+	num = 2*p*q*sfs;
+	pi = sum(num)/sites;
+	return(pi);
+}
+
+function (numeric)rrpois(i n, numeric lambda) {
+	if (lambda == 0) {x=0;} else {x=rpois(n, lambda);}
+	return(x);
+}
+
+function (fi)median(fi x) {
+	l = length(x);
+	if (l > 0) {
+		if ((l % 2) == 0 ) {
+			m = mean(c(x[round(length(x)/2)-1],x[round(length(x)/2)]));
+		} else {
+			m = x[round(length(x)/2)-1];
+		}
+	} else {
+		m = NAN;
+	}
+	return(m);
+}
+
+function (integer)cut(numeric x, numeric intervals) {
+	y = c();
+	for (b in seqLen(length(intervals)-1)) {
+  		y = c(y,length(x[x<intervals[b+1] & x>=intervals[b]]));
+  	}
+  	return(y);
+}
+  	
+  	
+
+
+reproduction() {
+	
+	if (subpop==p1) {
+		mCoeffT=mCoeffC;
+	} else {
+		mCoeffT=mCoeff;
+	}
+	
+	maxAgeT = maxAge;
+	
+	// selfing and outcrossing
+	//	if (individual.age <= maxAge) {
+	
+	// trying beverton holt fecundity selection
+	// the number of individuals to make in the whole population for logistic growth with a Beverton-Holt model
+	//	expected_pop_offspring = subpop.individualCount * (R / (1 + (subpop.individualCount * (R-1)) / K)); //lz not sure if this is correct
+	expected_pop_offspring = (rCoeff * subpop.individualCount) / (1 + subpop.individualCount / mCoeffT);
+	numSurvivors = length(subpop.subsetIndividuals(maxAge=maxAgeT-1));    // number of fertile mates that will still be alive in the next gen
+	if (numSurvivors>expected_pop_offspring) {numSurvivors = expected_pop_offspring;} // this is important for reducing population size in case deme overfull
+	expected_pop_offspring = expected_pop_offspring - numSurvivors;
+	
+	// the sum of fitness of all individuals in the pop, to scale the expected number of offspring for one individual
+	sum_fit = sum(subpop.cachedFitness(NULL));
+	max_fit = max(subpop.cachedFitness(NULL));
+	
+	popFitnessScaler = expected_pop_offspring / sum_fit;
+	
+	indFitness = subpop.cachedFitness(individual.index);
+	expected_ind_offspring = popFitnessScaler * indFitness;
+	realized_ind_offspring = rrpois(1, expected_ind_offspring);
+	
+	for ( i in seqLen(realized_ind_offspring))
+	{
+		
+		if ( selfRate > 0 & subpop.id > subpopsA ) {
+			// will we self? draw a random number between 0 and 1, if it is less than the selfing rate, we self
+			//			selfRandDraw = runif(1, 0, 1);
+			
+			if ( rbinom(1,1,asFloat(selfRate)) == 1) { // then we self
+				subpop.addSelfed(individual);			// there is no additional fecundity selection here
+			} else {		// otherwise we outcross
+				if(subpop.individualCount > 1) {
+					// find a mate with high enough fitness also
+					//search, and continue in the do loop while fitness is too low, once fitness is high enough, continue to actual mating
+					do
+					{
+						mate = subpop.sampleIndividuals(1, exclude=individual);
+					}
+					while (subpop.cachedFitness(mate.index) < runif(1, 0, max_fit));  // return to while loop unless fitness is higher than a random draw between 0 and max fit of the pop mate if fitness
+					subpop.addCrossed(individual, mate);
+				}
+			}
+		} else {			// otherwise we are full outcrossers
+			if(subpop.individualCount > 1) { // prevent incidental selfing, otherwise if only 1 ind, mating does not occur
+				// find a mate with high enough fitness also
+				//search, and continue in the do loop while fitness is too low, once fitness is high enough, continue to actual mating
+				do
+				{
+					mate = subpop.sampleIndividuals(1, exclude=individual);
+				}
+				while (subpop.cachedFitness(mate.index) < runif(1, 0, max_fit));  // return to while loop unless fitness is higher than a random draw between 0 and max fit of the pop mate if fitness
+				subpop.addCrossed(individual, mate);
+			}
+		} 		// end selfing or outcrossing if statements
+	}	  		// end for loop going through individual offspring
+	
+	
+	if (sh == 1) {
+		if (subpop.id>-1 & individual.index==0) {
+			catn("#######   Gen:   ########    "+sim.generation);
+			catn("=== REPRO ===");
+			catn(subpop);
+			catn(" Number of inds now: "+length(subpop.individuals));
+			catn(" Mates: "+ numMates);
+			catn(" expSurvivors: "+ numSurvivors);
+			catn(" Expected next gen: "+ expected_pop_offspring);
+			catn(" mean_litterSize: "+mean_litterSize);
+			//				catn(" Not repro: " + length(subpop.subsetIndividuals(minAge=maxAge)));
+		}
+		//		}
+	}
+}
+
+
+
+1 early() {
+	// burn in (not neutral)
+	sim.readFromPopulationFile(bfile);
+	sim.generation = 1;
+	
+	// subpops initial set to size 0
+	for (i in 2:subpopsT)
+		sim.addSubpop(i, 0);
+}
+
+early() {
+	inds = sim.subpopulations.individuals;
+	// scale fitness way high for fecundity selection only
+	inds.fitnessScaling = globalFitnessScaler;
+	
+	// let old individuals die and scale remaining ones fitness with carrying capacity
+	Nt = Na; // for first iteration use Na, then Na to scale fitness
+	
+	// increase sampling density if specified demes recently colonized		
+	edgeDemeId = sum(sim.subpopulations.individualCount!=0)-1; // id of moving edge
+	if (any(edgeDemeId == c(subpopsA-2,subpopsA-2+5,subpopsA-2+15))) { // in detailed sampling
+		defineGlobal("samplingK",1);
+	} else if (any(edgeDemeId == c(subpopsA+3,subpopsA+3+5,subpopsA+3+15))) { // turn back to normal sampling
+		defineGlobal("samplingK",5);
+	}
+	
+	for (i in 0:edgeDemeId) { // 0 indexed
+		ages = sim.subpopulations[i].individuals.age;
+		
+		// output internal fitness and diversity statistics
+		if (sim.generation > 0 & sim.generation % samplingK == 0) {
+
+			// fitness			
+			fit = sim.subpopulations[i].cachedFitness(NULL);
+			fit = fit[!isNAN(fit)]/globalFitnessScaler;
+			
+			if (length(fit)>0) {
+			
+				// binning of del and ben
+				scoeff = c(sim.subpopulations[i].individuals.uniqueMutations.selectionCoeff,0);
+				sBinDel = cut(scoeff,selCoefBreaksDel);
+				sBinBen = cut(scoeff,selCoefBreaksBen);
+				
+				// counts of mutations
+				cdel = mean(sim.subpopulations[i].individuals.countOfMutationsOfType(m2));
+				clethal = mean(sim.subpopulations[i].individuals.countOfMutationsOfType(m4));
+			
+				// neutral pi
+				nmuts = sim.mutationsOfType(m1);
+				pi = calcPi(sim.mutationCounts(sim.subpopulations[i],nmuts),2*(sim.subpopulations[i].individualCount),gsize);
+			
+				// observed heterozygosity
+				uc = c();
+				oh = c();
+				for (ind in sim.subpopulations[i].individuals) {
+					muts0 = ind.genomes[0].mutations;
+					muts1 = ind.genomes[1].mutations;
+					unshared_count = muts0.size() + muts1.size() - 2 * sum(match(muts0, muts1) >= 0); // number of unique muts i.e. heterozygous (see manual 3.5 p241)
+					uc = c(uc,unshared_count);
+					obs_het = unshared_count / length(unique(c(muts0,muts1))); // number of unique muts divided by number of polymorphic sites in deme
+					oh = c(oh,obs_het);
+				}
+			
+				// output all summary stats
+				line=paste(c(
+					sim.generation,"\t",
+					i+1,"\t",
+					var(fit),"\t",
+					mean(fit),"\t",
+					median(fit),"\t",
+					length(fit),"\t",
+					cdel,"\t",
+					clethal,"\t",
+					pi,"\t",
+					mean(uc),"\t",
+					mean(oh),"\t",
+					paste(sBinDel,sep=","),"\t",
+					paste(sBinBen,sep=",")
+					));
+				writeFile('fitness-stats_rep'+rep+'_par'+parcomb+'.txt', line, append=T);
+			}
+		}
+		
+		sim.subpopulations[i].individuals[ages>=maxAge].fitnessScaling = 0.0;
+		
+		Nt = Ns;
+	}
+
+}
+
+// write pi output	 (neutral mutations)
+late() {
+	if (sim.generation % 100 == 0) {
+		nmuts = sim.mutationsOfType(m1);
+		pi = calcPi(sim.mutationCounts(p1,nmuts),2*(p1.individualCount),gsize);
+		line=paste(c(sim.generation,'\t',pi));
+		if (!exists("slimgui")) {
+			writeFile('pi-core_rep'+rep+'_par'+parcomb+'.txt', line, append=T);
+		} else {
+			catn(line);
+		}
+	}
+}
+
+// start migration, no burn in 
+late() {
+	
+	// migration from ancestral population 
+	nIndividuals = sim.subpopulations[0].individualCount;  // total individuals
+	if (nIndividuals > 0) {
+		nMigrants = rpois(1, nIndividuals * mig);
+		migrantsAnc = sample(sim.subpopulations[0].individuals, nMigrants);
+		sim.subpopulations[1].takeMigrants(migrantsAnc);
+	}
+	
+	for (i in 2:subpopsT) { // for subpopulations, not ancestral
+		
+		nInd = sim.subpopulations[i-1].individualCount;
+		
+		// migration to neighboring demes
+		if (nInd > 0){
+			nMigrantsF = nInd;
+			nMigrantsB = nInd;
+			while (nMigrantsF+nMigrantsB>nInd){
+				nMigrantsF = rpois(1, nInd * (mig / 2));
+				nMigrantsB = rpois(1, nInd * (mig / 2));
+			}
+			
+			migrants = sample(sim.subpopulations[i-1].individuals, nMigrantsF + nMigrantsB);
+			
+			if (sh==1) {
+				catn("   Population: "+i);
+				catn("      Individuals: "+nInd);
+				catn("      Migration: forward="+nMigrantsF+", backward="+nMigrantsB);
+			}
+			
+			if (nMigrantsB > 0){
+				backPop = sim.subpopulations[i-2]; // back migration into this population
+				migrantsB = migrants[0:(nMigrantsB-1)];
+				backPop.takeMigrants(migrantsB);
+			}
+			
+			if (nMigrantsF > 0 & i < subpopsT){
+				forwPop = sim.subpopulations[i];   // forward migration into this population
+				migrantsF = migrants[nMigrantsB:(nMigrantsB+nMigrantsF-1)];
+				forwPop.takeMigrants(migrantsF);
+			}
+		}
+	}
+	
+	// output samples at mating shift
+	if (!exists("t1Sampled")) {
+		if (sim.subpopulations[subpopsA].individualCount	> 0.5*Ns) {
+			g=sim.subpopulations[subpopsA-1].genomes;
+			g.outputVCF(filePath='t1_A_rep'+rep+'_par'+parcomb+'.vcf');
+			g=sim.subpopulations[subpopsA].genomes;
+			g.outputVCF(filePath='t1_B_rep'+rep+'_par'+parcomb+'.vcf');
+			defineConstant("t1Sampled",1);
+		}
+	}
+	
+	// track growth of populations
+	if (sim.generation % 10 == 0) {
+		for (i in 2:subpopsT) {
+			c=sim.subpopulations[i-1].individualCount;//here
+			line=paste(c(sim.generation,'\t',i,'\t',c));
+			if (!exists("slimgui")) {
+				writeFile('sizes-subpops_rep'+rep+'_par'+parcomb+'.txt', line, append=T);
+			}
+		}
+		
+		
+		// safety for population retraction	
+		
+		numPops = length(sim.subpopulations[sim.subpopulations.individualCount>10]);
+		if ( size_tm10 > length(sim.subpopulations.individuals) | numPops_tm10 > numPops ) {
+			t=t_const+1;
+			//			catn(t);
+			if (t >= 10) { // decline has to happen 10 times consequtively every 10 generations, then output
+				catn("Populations declining in generation:");
+				catn(sim.generation);
+				rm("subpopsT",removeConstants=T);
+				defineConstant("subpopsT",max(which(sim.subpopulations.individualCount>10))+1);
+				defineConstant("earlyFinish",1);
+			
+			}
+		} else {
+			t = 0;
+		}
+		rm("t_const",removeConstants = T);
+		defineConstant("t_const",t);
+		rm("size_tm10", removeConstants = T);
+		defineConstant("size_tm10",length(sim.subpopulations.individuals));
+		rm("numPops_tm10", removeConstants = T);
+		defineConstant("numPops_tm10",numPops);
+	
+	}
+	
+	// output some statistics when final edge population reaches carrying capacity threshold
+	if (!exists("done")) {
+		if (sim.subpopulations[subpopsT-1].individualCount > 0.5*Ns | exists("earlyFinish")) {
+			g=sim.subpopulations[subpopsT-1].genomes;
+			g.outputVCF(filePath='t3_C_rep'+rep+'_par'+parcomb+'.vcf');
+			g=sim.subpopulations[subpopsA-1].genomes;
+			g.outputVCF(filePath='t3_A_rep'+rep+'_par'+parcomb+'.vcf');
+			g=sim.subpopulations[subpopsA].genomes;
+			g.outputVCF(filePath='t3_B_rep'+rep+'_par'+parcomb+'.vcf');
+			g=p1.sampleIndividuals(200).genomes;
+			g.outputVCF(filePath='t3_Z_rep'+rep+'_par'+parcomb+'.vcf');
+			
+			if (exists("earlyFinish")) {
+				//g=sim.subpopulations[subpopsT-1].genomes;
+				//g.outputVCF(filePath='edge-ap50_rep'+rep+'_par'+parcomb+'.vcf');
+				line=paste(c(sim.generation,'\t',rep,'\t',parcomb,'\t',subpopsT,'\tfinished early'));
+				writeFile('finish_early_note_'+rep+'_par'+parcomb+'.end', line);
+				defineConstant("infinal",1);
+			}
+			
+			// neutral nucleotide diversity in edge population		
+			nmuts = sim.mutationsOfType(m1);
+			pi = calcPi(sim.mutationCounts(sim.subpopulations[subpopsT-1],nmuts),2*(sim.subpopulations[subpopsT-1].individualCount),gsize);
+			line=paste(c(sim.generation,'\t',pi));
+			writeFile('pi-edge_rep'+rep+'_par'+parcomb+'.txt', line, append=F);
+			
+			defineConstant("done",1);
+			catn(sim.generation + ": Reached threshold K");
+		}
+	}
+	if (!exists("infinal")) {
+		if (sim.subpopulations[subpopsT-1].individualCount > 0) {
+			if (!exists("finalgen")) {
+				defineConstant("finalgen",sim.generation+100);
+				catn(sim.generation + ": FinalGen set to "+finalgen);
+			}
+			if (sim.subpopulations[subpopsT-1].individualCount > 0.1*Ns & sim.generation>=finalgen) {
+				//g=sim.subpopulations[subpopsT-1].genomes;
+				//g.outputVCF(filePath='edge-ap50_rep'+rep+'_par'+parcomb+'.vcf');
+				defineConstant("infinal",1);
+				catn(sim.generation + ": Reached finalGen");
+			}
+		}
+	}
+	if	(exists("infinal") & exists("done")) {
+		sim.simulationFinished();
+	}
+	
+	// safety for very small sims
+	if ((sim.generation > 5000) & (length(sim.subpopulations.individuals) < (Na+Ns)) ) {
+		catn("Small pops.");
+		sim.simulationFinished();
+	}
+}
+
+// end of simulation
+150000 late() {
+	catn("Exceeds maximum gens.");
+	sim.simulationFinished();
+}
+

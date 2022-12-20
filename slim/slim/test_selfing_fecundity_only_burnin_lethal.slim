@@ -1,0 +1,230 @@
+initialize() {
+	
+	initializeSLiMModelType("nonWF");
+	
+	initializeSLiMOptions(preventIncidentalSelfing=T);
+	
+	if (exists("slimgui")) {
+		
+		defineConstant("hdel",0.3);      // dom coeff
+		defineConstant("hben",0.3);
+		defineConstant("hlethal",0.02);
+		defineConstant("mdel",-0.001);   // mean sel coeff
+		defineConstant("mben",0.001);
+		defineConstant("mlethal",-1);    // -1 for lethal alleles, 0 makes them neutral
+		defineConstant("maxAge",10);
+		defineConstant("nneutral",0.25); // relative ratios of mutations
+		defineConstant("ndel",0.649);
+		defineConstant("nben",0.001);
+		defineConstant("nlethal",0.1);
+		defineConstant("Na",5000);
+		defineConstant("rCoeff",1.2);  // R coeff for BevHolt model
+		defineConstant("bfile","36_hdel0.3_hben0.3_hlethal0.02_mdel-0.001_mben0.001_nneutral0.25_ndel0.649_nben0.01_nlethal0.1_Na5000_rCoeff1.2.slimout"); // filename for output burn in
+
+	} else {
+		
+		getSeed();
+	
+	}
+	
+	defineConstant("selfRate",0);	
+	defineConstant("sh",0); 				// if shell output wanted (1=T, 0=F)
+	defineConstant("gsize",1e7);
+	defineConstant("rec",1e-8);
+	defineConstant("mCoeffT", Na / (rCoeff - 1));
+	defineConstant("size_tm10",0);
+	defineConstant("numPops_tm10",0);
+	defineConstant("t_const",0);
+ 	defineConstant("globalFitnessScaler", 100000); // to make soft selection and fecundity selection	
+	
+	
+	initializeMutationRate(7e-8);
+	initializeMutationType("m1", 0.5, "f", 0.0);         // neutral
+	initializeMutationType("m2", hdel, "e", mdel);	    // deleterious: dom coeff, dist, mean
+	initializeMutationType("m3", hdel, "e", mben);       // beneficial: dom coeff same as del, dist, mean
+	initializeMutationType("m4", hlethal, "f", mlethal);      // lethal
+	
+	m1.convertToSubstitution = T;
+	m1.mutationStackGroup = -1;
+	m1.mutationStackPolicy = "f";
+	m2.convertToSubstitution = T;
+	m2.mutationStackGroup = -1;
+	m2.mutationStackPolicy = "f";
+	m3.convertToSubstitution = T;
+	m3.mutationStackGroup = -1;
+	m3.mutationStackPolicy = "f";
+	m4.convertToSubstitution = F;
+	m4.mutationStackGroup = -1;
+	m4.mutationStackPolicy = "f";	
+	
+	initializeGenomicElementType("g1", c(m1, m2, m3, m4), c(nneutral,ndel,nben,nlethal));
+	initializeGenomicElement(g1, 0, gsize-1);
+	initializeRecombinationRate(rec);
+}
+
+
+function (numeric)calcPi(* counts, i chrom, i sites) {
+	n = chrom;
+	ct = sort(unique(counts));
+	sfs = c();
+	for (i in ct) {sfs=c(sfs,length(counts[counts==i]));}
+	p = ct/n;
+	q = 1-p;
+	num = 2*p*q*sfs;
+	pi = sum(num)/sites;
+	return(pi);
+}
+
+function (numeric)rrpois(i n, numeric lambda) {
+	if (lambda == 0) {x=0;} else {x=rpois(n, lambda);}
+	return(x);
+}
+
+function (fi)median(fi x) {
+	l = length(x);
+	if (l > 0) {
+		if ((l % 2) == 0 ) {
+			m = mean(c(x[round(length(x)/2)-1],x[round(length(x)/2)]));
+		} else {
+			m = x[round(length(x)/2)-1];
+		}
+	} else {
+		m = NAN;
+	} 
+	return(m);
+}
+
+
+reproduction() {
+
+	// selfing and outcrossing
+	// trying beverton holt fecundity selection
+	// the number of individuals to make in the whole population for logistic growth with a Beverton-Holt model
+	expected_pop_offspring = (rCoeff * subpop.individualCount) / (1 + subpop.individualCount / mCoeffT);
+	numSurvivors = length(subpop.subsetIndividuals(maxAge=maxAge-1));    // number of fertile mates that will still be alive in the next gen
+	if (numSurvivors>expected_pop_offspring) {numSurvivors = expected_pop_offspring;} // this is important for reducing population size in case deme overfull
+	expected_pop_offspring = expected_pop_offspring - numSurvivors;
+
+	// the sum of fitness of all individuals in the pop, to scale the expected number of offspring for one individual
+	sum_fit = sum(subpop.cachedFitness(NULL));
+	max_fit = max(subpop.cachedFitness(NULL));
+
+	popFitnessScaler = expected_pop_offspring / sum_fit;
+
+	indFitness = subpop.cachedFitness(individual.index);
+	expected_ind_offspring = popFitnessScaler * indFitness;
+	realized_ind_offspring = rrpois(1, expected_ind_offspring);
+
+	for ( i in seqLen(realized_ind_offspring))
+	{
+		
+		if ( selfRate > 0 ) {
+			// will we self? draw a random number between 0 and 1, if it is less than the selfing rate, we self
+//			selfRandDraw = runif(1, 0, 1);
+			
+			if ( rbinom(1,1,asFloat(selfRate)) == 1) { // then we self
+				subpop.addSelfed(individual);			// there is no additional fecundity selection here
+			} else {		// otherwise we outcross
+				if(subpop.individualCount > 1) {
+					// find a mate with high enough fitness also
+					//search, and continue in the do loop while fitness is too low, once fitness is high enough, continue to actual mating
+					do 
+					{
+						mate = subpop.sampleIndividuals(1, exclude=individual);
+					}
+					while (subpop.cachedFitness(mate.index) < runif(1, 0, max_fit));  // return to while loop unless fitness is higher than a random draw between 0 and max fit of the pop mate if fitness
+					subpop.addCrossed(individual, mate);
+				}		
+			}
+		} else {			// otherwise we are full outcrossers
+			if(subpop.individualCount > 1) { // prevent incidental selfing, otherwise if only 1 ind, mating does not occur
+				// find a mate with high enough fitness also
+				//search, and continue in the do loop while fitness is too low, once fitness is high enough, continue to actual mating
+				do
+				{
+					mate = subpop.sampleIndividuals(1, exclude=individual);
+				}
+				while (subpop.cachedFitness(mate.index) < runif(1, 0, max_fit));  // return to while loop unless fitness is higher than a random draw between 0 and max fit of the pop mate if fitness
+				subpop.addCrossed(individual, mate);
+			}
+		} 		// end selfing or outcrossing if statements
+	}	  		// end for loop going through individual offspring
+
+
+	if (sh == 1) {
+		if (individual.index==0) {
+			catn("#######   Gen:   ########    "+sim.generation);
+			catn("=== REPRO ===");
+			catn(subpop);
+			catn(" Number of inds now: "+length(subpop.individuals));
+			catn(" Mates: "+ numMates);
+			catn(" expSurvivors: "+ numSurvivors);
+			catn(" Expected next gen: "+ expected_pop_offspring);
+			catn(" mean_litterSize: "+mean_litterSize);
+//				catn(" Not repro: " + length(subpop.subsetIndividuals(minAge=maxAge)));
+		}
+//		}
+	}
+}
+
+
+
+1 early() {
+	// burn in (not neutral)
+	sim.addSubpop(1, Na); // core ancestral population
+}
+
+early() {
+   inds = sim.subpopulations.individuals;
+   // scale fitness way high for fecundity selection only
+   inds.fitnessScaling = globalFitnessScaler;
+	
+	// let old individuals die and scale remaining ones fitness with carrying capacity
+	Nt = Na; // for first iteration use Na, then Na to scale fitness
+	if (sh ==1) {	
+		catn("=== FITNESS ==="); 
+	}
+	
+	i = 0;
+	ages = sim.subpopulations[i].individuals.age;
+		
+	if (sh ==1) {
+		Nsurvivor = length(ages[ages<maxAge]);
+		if (Nsurvivor!=0) {
+			catn(sim.subpopulations[i]);
+			catn(" carry cap "+Nt);
+			catn(" Suvivors " + Nsurvivor);
+			catn(" Not Survivors " + length(ages[ages>=maxAge]));
+		}
+	}
+
+	sim.subpopulations[i].individuals[ages>=maxAge].fitnessScaling = 0.0;
+	
+}
+
+// write outputs	 (pi neutral mutations, finally full output)
+late() {
+	if (sim.generation % 1000 == 0) {
+		nmuts = sim.mutationsOfType(m1);
+		pi = calcPi(sim.mutationCounts(p1,nmuts),2*(p1.individualCount),gsize);
+		line=paste(c(sim.generation,'\t',pi));
+		if (!exists("slimgui")) {
+			writeFile('pi-burn_bfile'+bfile+'.txt', line, append=T);
+		} else {
+			catn(line);
+		}
+		
+		// final burned in output 
+		if (sim.generation >= 4*Na*maxAge) {
+			sim.outputFull(filePath=bfile);
+			sim.simulationFinished();
+		}
+	}
+}
+
+// burn in ends, output vcf (not required)
+200001 late() {
+	sim.outputFull(filePath=bfile);
+	sim.simulationFinished();
+}
+

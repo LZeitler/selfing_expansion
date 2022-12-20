@@ -1,0 +1,32 @@
+#+options: toc:2
+#+title: Genetic load during range expansion in different mating types
+#+author: Leo Zeitler
+
+* Introduction
+
+* How to run
+
+  #+begin_src bash
+  cd
+  snakemake -s pro/selfing-sims/snakefiles/selfing.snake --profile slurm --cluster-config pro/selfing-sims/snakefiles/cluster.ibu.json --configfile pro/selfing-sims/snakefiles/config.yaml
+  #+end_src>
+
+* Calculation of fitness
+Fitness is calculated multiplicatively. 
+  #+begin_src R
+ms=m*s[,1]
+head(apply(ms,2,function(x) prod(x)))
+#V1 V2 V3 V4 V5 V6 
+# 0  0  0  0  0  0 
+head(apply(ms,2,function(x) 1+prod(x)))
+#V1 V2 V3 V4 V5 V6 
+# 1  1  1  1  1  1 
+head(apply(ms,2,function(x) prod(1+x)))
+#       V1        V2        V3        V4        V5        V6 
+#0.8660611 0.8660611 0.8658834 0.8658266 0.8658834 0.8658834 
+  #+end_src>
+The product of deleterious genotypes is another output of the sims.
+#+begin_src R
+ms=m[s<0,]*s[s<0,1]
+apply(ms,2,function(x) prod(1+x))
+#+end_src>
