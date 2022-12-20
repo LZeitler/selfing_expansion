@@ -1,0 +1,29 @@
+#+options: toc:2
+#+title: Repository for the paper "Purging due to self-fertilization does not prevent accumulation of expansion load"
+#+author: Leo Zeitler, Christian Parisod, Kimberly Gilbert
+
+* Description
+
+** What this is
+   This is a repository to recreate simulations plots for the manuscript "Purging due to self-fertilization does not prevent accumulation of expansion load". For more information please refer to (/insert link/). If you use or adapt our code, data, output or plots, you agree to cite us.
+
+** Sequence data
+   Sequence data is stored at NCBI SRA as described in the paper.
+
+** Additional simulation output
+   Additional output is available on zenodo: 10.5281/zenodo.7464602
+   
+** Scripts
+   There are intermediate files for all the plots, as output from various scripts hosted here. This allows to recreate the plots without rerunning slim, etc.
+   Should there be missing input files or any other problems please feel free to open an issue.
+
+** Reproduce Figures
+   All figures can be reproduced using the provided scripts and supplementary data. 
+
+* Requirements
+- R (tested on 4.1.3)
+- python 3.8.12
+- SLiM version 3.7.1
+
+  Other software is listed in the manuscript.
+
