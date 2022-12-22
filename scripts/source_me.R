@@ -27,20 +27,6 @@ saveplot <- function(x, name, width=10, height=6){
            bg = "white")
 }
 
-## a function to get complements
-complement <- function(x){ ## A-T and G-C are complementary
-    bases=c("A","C","G","T")
-    xx <- unlist(strsplit(toupper(x),NULL))
-    paste(unlist(lapply(xx,function(bbb){
-    if(bbb=="A") compString<-"T"
-    if(bbb=="C") compString<-"G"
-    if(bbb=="G") compString<-"C"
-    if(bbb=="T") compString<-"A"
-    if(!bbb %in% bases) compString<-"N"
-    return(compString)
-})),collapse="")
-}
-
 mydatestamp <- function() as.character(system('date +%Y%m%d',T))
 mytimestamp <- function() as.character(system('date +%Y%m%d%H%M%S',T))
 

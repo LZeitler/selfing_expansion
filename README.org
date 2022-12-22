@@ -5,13 +5,14 @@
 * Description
 
 ** What this is
-   This is a repository to recreate simulations plots for the manuscript "Purging due to self-fertilization does not prevent accumulation of expansion load". For more information please refer to (/insert link/). If you use or adapt our code, data, output or plots, you agree to cite us.
+   This is a repository to recreate simulations plots for the manuscript "Purging due to self-fertilization does not prevent accumulation of expansion load". For more information please refer to https://doi.org/10.1101/2022.12.19.521096. If you use or adapt our code, data, output or plots, you agree to cite this manuscript.
 
 ** Sequence data
    Sequence data is stored at NCBI SRA as described in the paper.
 
 ** Additional simulation output
-   Additional output is available on zenodo: 10.5281/zenodo.7464602
+   Additional output is available on zenodo: https://doi.org/10.5281/zenodo.7464602.
+   Those files go into [[./output/sims]].
    
 ** Scripts
    There are intermediate files for all the plots, as output from various scripts hosted here. This allows to recreate the plots without rerunning slim, etc.
@@ -25,5 +26,5 @@
 - python 3.8.12
 - SLiM version 3.7.1
 
-  Other software is listed in the manuscript.
+Other software is listed in the manuscript.
 
